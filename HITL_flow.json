@@ -96,6 +96,109 @@
       ],
       "id": "d3cea445-a4a6-447d-aa4d-293deb08a08a",
       "name": "Responder error"
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\n\n// Tabla de politicas para la demo.\n// Usamos segundos para poder mostrar timeout en clase sin esperar minutos.\nconst policies = {\n  critical: { score: 0.95, timeoutSeconds: 30 },\n  high: { score: 0.82, timeoutSeconds: 60 },\n  medium: { score: 0.62, timeoutSeconds: 120 },\n  low: { score: 0.35, timeoutSeconds: 180 }\n};\n\n// Si llega un riskLevel desconocido, usamos medium como default conservador.\nconst policy = policies[d.riskLevel] || policies.medium;\n\n// Simulamos una deteccion de sensibilidad buscando terminos de riesgo.\n// Esto representa lo que en produccion podria decidir un modelo o un motor de reglas.\nconst text = (d.clinicalContext + ' ' + d.aiRecommendation).toLowerCase();\nconst sensitiveTerms = ['brca', 'patogenica', 'tratamiento', 'quimioterapia', 'diagnostico', 'critico', 'variante'];\nconst matchedSensitiveTerms = sensitiveTerms.filter((term) => text.includes(term));\n\n// Pedimos revision humana si el score es medio/alto o si aparecen terminos sensibles.\nconst requiresHumanReview = policy.score >= 0.6 || matchedSensitiveTerms.length > 0;\n\n// Si el caller no mando recomendacion, generamos una recomendacion conservadora.\nconst recommendation = d.aiRecommendation || (\n  requiresHumanReview\n    ? 'La IA detecto un caso sensible. Requiere revision humana antes de continuar.'\n    : 'Caso de bajo riesgo. Registrar trazabilidad y continuar con controles habituales.'\n);\n\n// Dejamos separadas la evaluacion de IA y la politica HITL para que sea auditable.\nreturn [{\n  json: {\n    ...d,\n    aiAssessment: {\n      model: 'simulated-hitl-policy-v1',\n      recommendation,\n      riskScore: policy.score,\n      confidence: matchedSensitiveTerms.length > 0 ? 0.78 : 0.58,\n      matchedSensitiveTerms\n    },\n    hitlPolicy: {\n      requiresHumanReview,\n      interventionPoint: 'antes_de_emitir_recomendacion_final',\n      timeoutSeconds: policy.timeoutSeconds,\n      fallbackAction: 'escalar_a_supervisor',\n      autoApproveAllowed: false\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        336,
+        -128
+      ],
+      "id": "ca397d9c-5656-4985-b2ca-81d0729fa344",
+      "name": "Preparar politica HITL"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://postman-echo.com/post",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => {\n  const resumeUrl = $execution.resumeUrl;\n  const approvalUrl = resumeUrl.includes('?')\n    ? resumeUrl.replace('?', '/decision?')\n    : resumeUrl + '/decision';\n\n  return JSON.stringify({\n    event: 'human_review_requested',\n    caseId: $json.caseId,\n    patientHash: $json.patientHash,\n    domain: $json.domain,\n    requestType: $json.requestType,\n    reviewer: $json.reviewer,\n    riskLevel: $json.riskLevel,\n    riskScore: $json.aiAssessment.riskScore,\n    recommendation: $json.aiAssessment.recommendation,\n    timeoutSeconds: $json.hitlPolicy.timeoutSeconds,\n    approvalUrl,\n    method: 'POST',\n    expectedBody: {\n      decision: 'approved | edited | rejected',\n      reviewerId: 'string',\n      comments: 'string',\n      editedRecommendation: 'string opcional'\n    }\n  });\n})() }}",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        624,
+        -128
+      ],
+      "id": "7a58f194-dbed-44d5-82c9-f9cbcf3461e1",
+      "name": "Notificar revisor",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "executeOnce": false,
+      "alwaysOutputData": false,
+      "notesInFlow": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "limitWaitTime": true,
+        "resumeAmount": "={{ $('Preparar politica HITL').first().json.hitlPolicy.timeoutSeconds }}",
+        "resumeUnit": "seconds",
+        "options": {
+          "responseData": "First Entry JSON",
+          "webhookSuffix": "decision"
+        }
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1376,
+        -128
+      ],
+      "id": "18416ee4-b57d-45f4-8a03-9abf266eb3ad",
+      "name": "Wait",
+      "webhookId": "d8a6bc4a-3021-4701-a11a-912f17b58687",
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 202
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1152,
+        -128
+      ],
+      "id": "c627b062-d670-4d6c-a030-0c6b9d6f0431",
+      "name": "Responder review requested"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Este nodo arma la respuesta inmediata del webhook inicial.\n// Es necesario porque el HTTP Request de notificacion cambia el $json.\nconst d = $('Preparar politica HITL').first().json;\n\n// El Wait tiene Webhook Suffix = \"decision\".\n// Por eso la URL usable debe ser /webhook-waiting/{id}/decision?signature=...\nconst resumeUrl = $execution.resumeUrl;\nconst approvalUrl = resumeUrl.includes('?')\n  ? resumeUrl.replace('?', '/decision?')\n  : resumeUrl + '/decision';\n\n// El alumno copia approvalUrl desde esta respuesta y la usa para aprobar, editar o rechazar.\nreturn [{\n  json: {\n    status: 'review_requested',\n    message: 'Caso recibido. El workflow queda esperando decision humana.',\n    caseId: d.caseId,\n    patientHash: d.patientHash,\n    approvalUrl,\n    approvalMethod: 'POST',\n    timeoutSeconds: d.hitlPolicy.timeoutSeconds,\n    expectedBody: {\n      decision: 'approved | edited | rejected',\n      reviewerId: 'string',\n      comments: 'string',\n      editedRecommendation: 'string opcional'\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        -128
+      ],
+      "id": "b4181b28-d087-4cd5-aa5a-0a7f585485de",
+      "name": "Preparar respuesta review requested"
     }
   ],
   "pinData": {},
@@ -124,10 +227,60 @@
     },
     "Input valido?": {
       "main": [
-        [],
+        [
+          {
+            "node": "Preparar politica HITL",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Responder error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar politica HITL": {
+      "main": [
+        [
+          {
+            "node": "Notificar revisor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notificar revisor": {
+      "main": [
+        [
+          {
+            "node": "Preparar respuesta review requested",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar respuesta review requested": {
+      "main": [
+        [
+          {
+            "node": "Responder review requested",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Responder review requested": {
+      "main": [
+        [
+          {
+            "node": "Wait",
             "type": "main",
             "index": 0
           }
@@ -141,7 +294,7 @@
     "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "37cf14b2-5b05-4c67-acd4-c6d93bb2d90c",
+  "versionId": "000c23b7-635e-4811-b5fc-bd789782c219",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "f52d0c623bdbfa63370dfce13808237a73eab9ece965af3e1f62c3b9a85165de"
