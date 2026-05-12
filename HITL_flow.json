@@ -1,0 +1,164 @@
+{
+  "name": "Human in the Loop - HITL",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "# Layout visual recomendado\n------\n## Clase 6 - HITL con bots y notificaciones\n\nColumna 1: Webhook nuevo caso\nColumna 2: Validar y anonimizar\nColumna 3: Input valido?\nColumna 4: Preparar politica HITL / Responder error\nColumna 5: Notificar revisor\nColumna 6: Preparar respuesta review requested\nColumna 7: Responder review requested\nColumna 8: Esperar decision humana\nColumna 9: Parsear decision humana\nColumna 10: Decision recibida?\nColumna 11 arriba: Cierre decision humana\nColumna 11 abajo: Escalar a supervisor -> Fallback seguro\nColumna 12 centro: Armar respuesta final",
+        "height": 544,
+        "width": 320
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -624,
+        -512
+      ],
+      "typeVersion": 1,
+      "id": "7a7abe54-8e05-4eec-a1ad-227ad629d85d",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hitl-review-request",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -496,
+        112
+      ],
+      "id": "cfe2f492-719c-4bce-aca4-c3b8363907b0",
+      "name": "Webhook nuevo caso",
+      "webhookId": "e0d31de2-9864-477e-b6c0-17bf44a80531",
+      "executeOnce": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Este nodo recibe el body del Webhook y lo normaliza.\n// En n8n, a veces el payload llega en json.body y otras directo en json.\nconst body = $input.first().json.body || $input.first().json || {};\n\n// Campos minimos para poder operar el flujo HITL.\n// Si falta alguno, no seguimos con la automatizacion.\nconst required = ['caseId', 'patientId', 'clinicalContext'];\nconst missing = required.filter((field) => !body[field]);\n\nif (missing.length > 0) {\n  return [{\n    json: {\n      valid: false,\n      statusCode: 400,\n      error: 'Faltan campos obligatorios: ' + missing.join(', ')\n    }\n  }];\n}\n\n// Hash simple para no arrastrar patientId en claro por logs y notificaciones.\n// Es suficiente para clase; en produccion usar una estrategia de desidentificacion formal.\nconst hashId = (id) => {\n  let h = 0;\n  const value = String(id);\n  for (let i = 0; i < value.length; i++) {\n    h = ((h << 5) - h) + value.charCodeAt(i);\n    h |= 0;\n  }\n  return 'hash_' + Math.abs(h).toString(36);\n};\n\n// Salida canonica para que todos los nodos siguientes trabajen con el mismo contrato.\nreturn [{\n  json: {\n    valid: true,\n    caseId: String(body.caseId),\n    patientHash: hashId(body.patientId),\n    domain: body.domain || 'salud',\n    requestType: body.requestType || 'revision_clinica',\n    clinicalContext: String(body.clinicalContext).trim(),\n    aiRecommendation: String(body.aiRecommendation || '').trim(),\n    riskLevel: String(body.riskLevel || 'medium').toLowerCase(),\n    reviewer: body.reviewer || { name: 'Revisor asignado', role: 'especialista' },\n    startedAtMs: Date.now()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -208,
+        112
+      ],
+      "id": "4995dd74-dd86-4281-a5c6-e4dc3d1729cd",
+      "name": "Validar y anonimizar"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "790ee639-aa23-4437-a922-3eeeba56cdbf",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        32,
+        112
+      ],
+      "id": "284c2393-1370-49c9-9be0-f603aa2f1d74",
+      "name": "Input valido?"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: $json.error, statusCode: 400 } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        336,
+        384
+      ],
+      "id": "d3cea445-a4a6-447d-aa4d-293deb08a08a",
+      "name": "Responder error"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook nuevo caso": {
+      "main": [
+        [
+          {
+            "node": "Validar y anonimizar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar y anonimizar": {
+      "main": [
+        [
+          {
+            "node": "Input valido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input valido?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Responder error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "37cf14b2-5b05-4c67-acd4-c6d93bb2d90c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f52d0c623bdbfa63370dfce13808237a73eab9ece965af3e1f62c3b9a85165de"
+  },
+  "id": "WgU3tcNZ6wvOXhp3",
+  "tags": [
+    {
+      "updatedAt": "2026-03-05T00:08:13.974Z",
+      "createdAt": "2026-03-05T00:08:13.974Z",
+      "id": "KohG0fVuBmN1bEC4",
+      "name": "coderhouse"
+    },
+    {
+      "updatedAt": "2026-03-05T00:08:19.735Z",
+      "createdAt": "2026-03-05T00:08:19.735Z",
+      "id": "Xtwn5u4PC6dnMd4A",
+      "name": "ai_automation"
+    }
+  ]
+}
